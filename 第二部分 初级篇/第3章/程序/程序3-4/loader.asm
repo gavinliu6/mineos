@@ -10,6 +10,10 @@
 ;	本模块作者：	田宇
 ;	EMail:		345538255@qq.com
 ;
+;	本程序由 MBR 程序加载至物理地址为 `0x10000` 处
+;
+;	loader.bin 通过 `jmp 0x1000:0x00` 移交控制权给本程序
+;	CS = `0x1000`
 ;
 ;***************************************************/
 
@@ -49,8 +53,8 @@ GdtLen64	equ	$ - LABEL_GDT64
 GdtPtr64	dw	GdtLen64 - 1
 		dd	LABEL_GDT64
 
-SelectorCode64	equ	LABEL_DESC_CODE64 - LABEL_GDT64
-SelectorData64	equ	LABEL_DESC_DATA64 - LABEL_GDT64
+SelectorCode64	equ	LABEL_DESC_CODE64 - LABEL_GDT64	; 8 = 0000 1000 => 索引为 1
+SelectorData64	equ	LABEL_DESC_DATA64 - LABEL_GDT64	; 16 = 0001 0000 => 索引为 2
 
 [SECTION .s16]
 [BITS 16]
@@ -77,13 +81,14 @@ Label_Start:
 	mov	bp,	StartLoaderMessage
 	int	10h
 
-;=======	open address A20
+;=======	open address A20: 置位 `0x92` 端口号的第 1 位
 	push	ax
 	in	al,	92h
 	or	al,	00000010b
 	out	92h,	al
 	pop	ax
 
+;=======	开启 Big Real Mode 模式
 	cli
 
 	db	0x66
@@ -179,17 +184,17 @@ Label_No_LoaderBin:
 ;=======	found loader.bin name in root director struct
 
 Label_FileName_Found:
-	mov	ax,	RootDirSectors
+	mov	ax,	RootDirSectors	; AX = 根目录区占用的扇区数
 	and	di,	0FFE0h
-	add	di,	01Ah
-	mov	cx,	word	[es:di]
+	add	di,	01Ah	; DI = kernel.bin 的起始簇号在 ES 段内的偏移量
+	mov	cx,	word	[es:di]	; CX = kernel.bin 的起始簇号
 	push	cx
 	add	cx,	ax
 	add	cx,	SectorBalance
 	mov	eax,	BaseTmpOfKernelAddr	;BaseOfKernelFile
 	mov	es,	eax
 	mov	bx,	OffsetTmpOfKernelFile	;OffsetOfKernelFile
-	mov	ax,	cx
+	mov	ax,	cx	; AX = kernel.bin 的起始扇区号
 
 Label_Go_On_Loading_File:
 	push	ax
@@ -198,12 +203,12 @@ Label_Go_On_Loading_File:
 	mov	al,	'.'
 	mov	bl,	0Fh
 	int	10h
-	pop	bx
-	pop	ax
+	pop	bx	; es:bx => 目标缓冲区起始地址 => `0x00:0x7E00`
+	pop	ax	; AX = 待读取的磁盘起始扇区号 = kernel.bin 的起始扇区号
 
-	mov	cl,	1
+	mov	cl,	1	; CL = 读入的扇区数量
 	call	Func_ReadOneSector
-	pop	ax
+	pop	ax	; AX = kernel.bin 的起始簇号
 
 ;;;;;;;;;;;;;;;;;;;;;;;	
 	push	cx
@@ -263,6 +268,7 @@ Label_File_Loaded:
 	mov	al, 'G'
 	mov	[gs:((80 * 0 + 39) * 2)], ax	; 屏幕第 0 行, 第 39 列。
 
+;=======	关闭软驱马达
 KillMotor:
 	
 	push	dx

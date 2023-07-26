@@ -9,7 +9,12 @@
 ;
 ;	本模块作者：	田宇
 ;	EMail:		345538255@qq.com
-;
+;	
+;	本程序由 BIOS 固件加载至物理地址为 `0x07c00` 处
+;	共占 512 个字节，物理地址空间为 `0x07c00` ~ `0x07dff`
+;	
+;	BIOS 通过最后一条指令 `jmp 0x0000:0x7c00` 移交控制权给本程序
+;	cs = `0x0000`
 ;
 ;***************************************************/
 
@@ -20,11 +25,12 @@ BaseOfStack	equ	0x7c00
 BaseOfLoader	equ	0x1000
 OffsetOfLoader	equ	0x00
 
-RootDirSectors	equ	14
-SectorNumOfRootDirStart	equ	19
-SectorNumOfFAT1Start	equ	1
+RootDirSectors	equ	14	; 根目录区占用的扇区数（不够 512 字节按 512 字节算） = (根目录可容纳的目录项数 224 x 每个目录项占用的字节数 32 + 512 - 1) / 512
+SectorNumOfRootDirStart	equ	19	; 根目录区的起始扇区号 = 保留扇区数 1 + FAT 表扇区数 9 x FAT 表份数 2 = 19
+SectorNumOfFAT1Start	equ	1	; FAT1 表的起始扇区号
 SectorBalance	equ	17	
 
+;=======	FAT12 文件系统的引导扇区
 	jmp	short Label_Start
 	nop
 	BS_OEMName	db	'MINEboot'
@@ -70,7 +76,18 @@ Label_Start:
 	mov	dx,	0000h
 	int	10h
 
-;=======	display on screen : Start Booting......
+;/***************************************************
+;	INT 10h, AH=13h
+;	在屏幕上显示字符串：`Start Boot`
+;
+;	AL = 01h	->	BL = 字体属性 = 0fh = 黑底白字高亮不闪烁
+;	                CX = 字符串长度（以字节为单位） = 10
+;	                光标移至字符串尾端位置
+;	DH = 行号 = 0
+;	DL = 列号 = 0
+;	ES:BP => 要显示字符串的内存地址
+;
+;***************************************************/
 
 	mov	ax,	1301h
 	mov	bx,	000fh
@@ -83,37 +100,43 @@ Label_Start:
 	mov	bp,	StartBootMessage
 	int	10h
 
-;=======	reset floppy
+;/***************************************************
+;	INT 13h, AH=00h
+;	复位软盘驱动器
+;
+;	DL = 驱动器号 = 00h = 第一个软盘驱动器
+;
+;***************************************************/
 
 	xor	ah,	ah
 	xor	dl,	dl
 	int	13h
 
 ;=======	search loader.bin
-	mov	word	[SectorNo],	SectorNumOfRootDirStart
+	mov	word	[SectorNo],	SectorNumOfRootDirStart	; 根目录区的起始扇区号
 
 Lable_Search_In_Root_Dir_Begin:
 
-	cmp	word	[RootDirSizeForLoop],	0
+	cmp	word	[RootDirSizeForLoop],	0	; [RootDirSizeForLoop] => 根目录占用的扇区数
 	jz	Label_No_LoaderBin
 	dec	word	[RootDirSizeForLoop]	
 	mov	ax,	00h
 	mov	es,	ax
-	mov	bx,	8000h
-	mov	ax,	[SectorNo]
-	mov	cl,	1
+	mov	bx,	8000h	; es:bx => 目标缓冲区起始地址
+	mov	ax,	[SectorNo]	; AX = 待读取的磁盘起始扇区号 = 根目录区的起始扇区号
+	mov	cl,	1	; CL = 读入的扇区数量
 	call	Func_ReadOneSector
 	mov	si,	LoaderFileName
 	mov	di,	8000h
-	cld
-	mov	dx,	10h
+	cld	; 清 DF 标志位
+	mov	dx,	10h	; DX = 0x10 = 16 = 每个扇区可容纳的目录项个数
 	
 Label_Search_For_LoaderBin:
 
 	cmp	dx,	0
 	jz	Label_Goto_Next_Sector_In_Root_Dir
 	dec	dx
-	mov	cx,	11
+	mov	cx,	11	; CX = 11 = 文件名 `LOADER BIN` 的长度
 
 Label_Cmp_FileName:
 
@@ -121,7 +144,7 @@ Label_Cmp_FileName:
 	jz	Label_FileName_Found
 	dec	cx
 	lodsb	
-	cmp	al,	byte	[es:di]
+	cmp	al,	byte	[es:di]	; 一个字节一个字节地比较文件名是否相等
 	jz	Label_Go_On
 	jmp	Label_Different
 
@@ -201,7 +224,19 @@ Label_File_Loaded:
 	
 	jmp	BaseOfLoader:OffsetOfLoader
 
-;=======	read one sector from floppy
+
+;/***************************************************
+;	INT 13h, AH=02h
+;	从软盘读取一个扇区的内容
+;
+;	AL = 读入的扇区数
+;	CH = 磁道号(柱面号)的低 8 位
+;	CL = 扇区号1~63(bit 0~5)，磁道号(柱面号)的高2位(bit 6~7, 只对硬盘有效);
+;	DH = 磁头号
+;	DL = 驱动器号(如果操作的是硬盘驱动器，bit 7必须被置位)
+;	ES:BX => 数据缓冲区
+;
+;***************************************************/
 
 Func_ReadOneSector:
 	
